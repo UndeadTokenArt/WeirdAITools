@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Job Postings Analysis</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <style>
+        /* Custom styles for better aesthetics and responsiveness */
+        body {
+            font-family: "Inter", sans-serif;
+            background-color: #f0f4f8; /* Light gray background */
+            color: #333;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 2rem auto;
+            padding: 1rem;
+        }
+
+        .card {
+            background-color: #ffffff;
+            border-radius: 1rem; /* Rounded corners */
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+        }
+
+        h1, h2 {
+            color: #1a202c; /* Darker text for headings */
+            font-weight: 700;
+        }
+
+        .chart-container {
+            width: 100%;
+            height: 400px; /* Fixed height for charts */
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        /* D3 specific styling for bars and text */
+        .bar {
+            fill: #4299e1; /* Blue color for bars */
+            transition: fill 0.3s ease;
+        }
+
+        .bar:hover {
+            fill: #3182ce; /* Darker blue on hover */
+        }
+
+        .axis text {
+            font-size: 0.875rem;
+            fill: #4a5568;
+        }
+
+        .axis line, .axis path {
+            stroke: #cbd5e0;
+        }
+
+        .tooltip {
+            position: absolute;
+            text-align: center;
+            padding: 0.5rem;
+            background: #333;
+            color: white;
+            border-radius: 0.5rem;
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.2s;
+            font-size: 0.875rem;
+        }
+
+        /* Drag and drop area styling */
+        .drop-zone {
+            border: 2px dashed #a0aec0; /* Gray dashed border */
+            border-radius: 1rem;
+            padding: 2rem;
+            text-align: center;
+            cursor: pointer;
+            transition: background-color 0.3s ease, border-color 0.3s ease;
+        }
+
+        .drop-zone.hover {
+            background-color: #e2e8f0; /* Lighter gray on hover */
+            border-color: #4299e1; /* Blue border on hover */
+        }
+
+        .drop-zone input[type="file"] {
+            display: none; /* Hide default file input */
+        }
+
+        .message-box {
+            background-color: #fff;
+            border: 1px solid #ccc;
+            border-radius: 0.5rem;
+            padding: 1rem;
+            margin-top: 1rem;
+            text-align: center;
+            font-size: 0.9rem;
+            color: #555;
+        }
+    </style>
+</head>
+<body class="p-4">
+    <div class="container">
+        <h1 class="text-3xl md:text-4xl font-bold text-center mb-6">Job Postings Analysis Dashboard</h1>
+
+        <div class="card mb-6">
+            <h2 class="text-xl font-semibold mb-4">Upload Job Data (JSON)</h2>
+            <div id="drop-zone" class="drop-zone relative">
+                <input type="file" id="json-upload" accept=".json" class="absolute inset-0 w-full h-full opacity-0 cursor-pointer">
+                <p class="text-gray-600 text-lg">Drag & drop your JSON file here or click to upload</p>
+                <div id="upload-message" class="text-sm text-red-500 mt-2"></div>
+            </div>
+            <div id="status-message" class="message-box hidden"></div>
+        </div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <div class="card flex flex-col items-center justify-center p-6 bg-blue-500 text-white shadow-lg">
+                <h2 class="text-2xl font-semibold mb-2">Total Job Postings</h2>
+                <p id="total-postings" class="text-5xl font-extrabold"></p>
+            </div>
+
+            <div class="card p-6 bg-green-500 text-white shadow-lg">
+                <h2 class="text-2xl font-semibold mb-4">Recently Posted (Last 7 Days)</h2>
+                <ul id="recent-postings" class="list-disc list-inside text-lg">
+                    </ul>
+            </div>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mt-6">
+            <div class="card">
+                <h2 class="text-xl font-semibold mb-4">Job Category Distribution</h2>
+                <div id="job-category-chart" class="chart-container"></div>
+            </div>
+
+            <div class="card">
+                <h2 class="text-xl font-semibold mb-4">Top 5 States/Regions by Job Count</h2>
+                <div id="state-region-chart" class="chart-container"></div>
+            </div>
+
+            <div class="card col-span-full">
+                <h2 class="text-xl font-semibold mb-4">Top 5 Cities by Job Count</h2>
+                <div id="city-chart" class="chart-container"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Initial JSON data (can be overwritten by file upload)
+        let jsonData = {};
+
+        // Function to parse "postedOn" string to days ago
+        function getDaysAgo(postedOnString) {
+            if (postedOnString.includes("Yesterday")) {
+                return 1;
+            } else if (postedOnString.includes("Today")) {
+                return 0;
+            } else if (postedOnString.includes("Days Ago")) {
+                return parseInt(postedOnString.replace("Posted ", "").replace(" Days Ago", ""));
+            } else if (postedOnString.includes("Day Ago")) {
+                return 1;
+            }
+            return Infinity; // For "30+ Days Ago" or unparseable
+        }
+
+        // Function to update the dashboard with new data
+        function updateDashboard(data) {
+            // Display Total Job Postings
+            document.getElementById('total-postings').textContent = data.total;
+
+            // Display Recently Posted Jobs (Last 7 Days)
+            const recentPostingsList = document.getElementById('recent-postings');
+            recentPostingsList.innerHTML = ''; // Clear previous list items
+            const recentJobs = data.jobPostings.filter(job => getDaysAgo(job.postedOn) <= 7);
+            if (recentJobs.length > 0) {
+                recentJobs.forEach(job => {
+                    const listItem = document.createElement('li');
+                    listItem.textContent = `${job.title} (${job.locationsText}) - ${job.postedOn}`;
+                    recentPostingsList.appendChild(listItem);
+                });
+            } else {
+                const listItem = document.createElement('li');
+                listItem.textContent = 'No job postings in the last 7 days.';
+                recentPostingsList.appendChild(listItem);
+            }
+
+            // Prepare data for Job Category Chart
+            const jobCategoryData = data.facets.find(f => f.facetParameter === "jobFamilyGroup")?.values || [];
+            jobCategoryData.sort((a, b) => b.count - a.count);
+
+            // Prepare data for State/Region Chart (Top 5)
+            const stateRegionData = data.facets.find(f => f.facetParameter === "State_Region")?.values || [];
+            stateRegionData.sort((a, b) => b.count - a.count);
+            const top5States = stateRegionData.slice(0, 5);
+
+            // Prepare data for City Chart (Top 5)
+            const cityData = data.facets.find(f => f.facetParameter === "locationMainGroup")?.values.find(v => v.facetParameter === "locations")?.values || [];
+            cityData.sort((a, b) => b.count - a.count);
+            const top5Cities = cityData.slice(0, 5);
+
+            // Render charts
+            renderCharts(jobCategoryData, top5States, top5Cities);
+        }
+
+        // Function to create a bar chart
+        function createBarChart(data, containerId, xKey, yKey) {
+            const container = document.getElementById(containerId);
+            // Clear existing SVG if any to prevent duplicates on resize/re-render
+            d3.select(container).select("svg").remove();
+
+            const margin = { top: 20, right: 30, bottom: 100, left: 60 }; // Increased bottom margin for labels
+            const containerWidth = container.clientWidth;
+            const containerHeight = container.clientHeight;
+            const width = containerWidth - margin.left - margin.right;
+            const height = containerHeight - margin.top - margin.bottom;
+
+            const svg = d3.select(container)
+                .append("svg")
+                .attr("width", containerWidth)
+                .attr("height", containerHeight)
+                .append("g")
+                .attr("transform", `translate(${margin.left},${margin.top})`);
+
+            // X scale (band scale for categorical data)
+            const x = d3.scaleBand()
+                .domain(data.map(d => d[xKey]))
+                .range([0, width])
+                .padding(0.1);
+
+            // Y scale (linear scale for quantitative data)
+            const y = d3.scaleLinear()
+                .domain([0, d3.max(data, d => d[yKey])])
+                .nice()
+                .range([height, 0]);
+
+            // Add X axis
+            svg.append("g")
+                .attr("class", "axis x-axis")
+                .attr("transform", `translate(0,${height})`)
+                .call(d3.axisBottom(x))
+                .selectAll("text")
+                .attr("transform", "translate(-10,0)rotate(-45)") // Rotate labels for better readability
+                .style("text-anchor", "end");
+
+            // Add Y axis
+            svg.append("g")
+                .attr("class", "axis y-axis")
+                .call(d3.axisLeft(y));
+
+            // Tooltip div
+            const tooltip = d3.select("body").append("div")
+                .attr("class", "tooltip");
+
+            // Add bars
+            svg.selectAll(".bar")
+                .data(data)
+                .enter()
+                .append("rect")
+                .attr("class", "bar")
+                .attr("x", d => x(d[xKey]))
+                .attr("y", d => y(d[yKey]))
+                .attr("width", x.bandwidth())
+                .attr("height", d => height - y(d[yKey]))
+                .on("mouseover", function(event, d) {
+                    d3.select(this).transition().duration(200).attr("fill", "#3182ce"); // Darker blue on hover
+                    tooltip.style("opacity", 1)
+                        .html(`<strong>${d[xKey]}</strong>: ${d[yKey]}`)
+                        .style("left", (event.pageX + 10) + "px")
+                        .style("top", (event.pageY - 28) + "px");
+                })
+                .on("mouseout", function() {
+                    d3.select(this).transition().duration(200).attr("fill", "#4299e1"); // Original blue
+                    tooltip.style("opacity", 0);
+                });
+        }
+
+        // Main render function for charts
+        function renderCharts(jobCategoryData, top5States, top5Cities) {
+            if (jobCategoryData.length > 0) {
+                createBarChart(jobCategoryData, "job-category-chart", "descriptor", "count");
+            } else {
+                d3.select("#job-category-chart").select("svg").remove();
+                document.getElementById("job-category-chart").innerHTML = "<p class='text-gray-500'>No job category data available.</p>";
+            }
+
+            if (top5States.length > 0) {
+                createBarChart(top5States, "state-region-chart", "descriptor", "count");
+            } else {
+                d3.select("#state-region-chart").select("svg").remove();
+                document.getElementById("state-region-chart").innerHTML = "<p class='text-gray-500'>No state/region data available.</p>";
+            }
+
+            if (top5Cities.length > 0) {
+                createBarChart(top5Cities, "city-chart", "descriptor", "count");
+            } else {
+                d3.select("#city-chart").select("svg").remove();
+                document.getElementById("city-chart").innerHTML = "<p class='text-gray-500'>No city data available.</p>";
+            }
+        }
+
+        // File upload handling
+        const dropZone = document.getElementById('drop-zone');
+        const fileInput = document.getElementById('json-upload');
+        const uploadMessage = document.getElementById('upload-message');
+        const statusMessage = document.getElementById('status-message');
+
+        // Prevent default drag behaviors
+        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+            dropZone.addEventListener(eventName, preventDefaults, false);
+            document.body.addEventListener(eventName, preventDefaults, false); // Prevent browser default for entire body
+        });
+
+        function preventDefaults(e) {
+            e.preventDefault();
+            e.stopPropagation();
+        }
+
+        // Highlight drop zone when item is dragged over it
+        ['dragenter', 'dragover'].forEach(eventName => {
+            dropZone.addEventListener(eventName, () => dropZone.classList.add('hover'), false);
+        });
+
+        ['dragleave', 'drop'].forEach(eventName => {
+            dropZone.addEventListener(eventName, () => dropZone.classList.remove('hover'), false);
+        });
+
+        // Handle dropped files
+        dropZone.addEventListener('drop', handleDrop, false);
+
+        function handleDrop(e) {
+            const dt = e.dataTransfer;
+            const files = dt.files;
+            handleFiles(files);
+        }
+
+        // Handle file input change
+        fileInput.addEventListener('change', (e) => {
+            handleFiles(e.target.files);
+        });
+
+        function handleFiles(files) {
+            if (files.length === 0) {
+                uploadMessage.textContent = 'No file selected.';
+                return;
+            }
+
+            const file = files[0];
+            if (file.type !== 'application/json') {
+                uploadMessage.textContent = 'Please upload a JSON file.';
+                statusMessage.classList.add('hidden');
+                return;
+            }
+
+            uploadMessage.textContent = ''; // Clear previous error messages
+            statusMessage.classList.remove('hidden');
+            statusMessage.textContent = 'Processing file...';
+
+            const reader = new FileReader();
+            reader.onload = function(event) {
+                try {
+                    const parsedData = JSON.parse(event.target.result);
+                    // Basic validation for expected structure
+                    if (parsedData.total !== undefined && parsedData.jobPostings && parsedData.facets) {
+                        jsonData = parsedData; // Update global jsonData
+                        updateDashboard(jsonData); // Re-render dashboard with new data
+                        statusMessage.textContent = 'Data loaded successfully!';
+                        statusMessage.style.backgroundColor = '#d4edda';
+                        statusMessage.style.borderColor = '#28a745';
+                        statusMessage.style.color = '#155724';
+                    } else {
+                        statusMessage.textContent = 'Invalid JSON structure. Please ensure it contains "total", "jobPostings", and "facets".';
+                        statusMessage.style.backgroundColor = '#f8d7da';
+                        statusMessage.style.borderColor = '#dc3545';
+                        statusMessage.style.color = '#721c24';
+                    }
+                } catch (e) {
+                    statusMessage.textContent = 'Error parsing JSON file: ' + e.message;
+                    statusMessage.style.backgroundColor = '#f8d7da';
+                    statusMessage.style.borderColor = '#dc3545';
+                    statusMessage.style.color = '#721c24';
+                } finally {
+                    // Hide status message after a few seconds
+                    setTimeout(() => {
+                        statusMessage.classList.add('hidden');
+                    }, 5000);
+                }
+            };
+            reader.onerror = function() {
+                statusMessage.textContent = 'Error reading file.';
+                statusMessage.style.backgroundColor = '#f8d7da';
+                statusMessage.style.borderColor = '#dc3545';
+                statusMessage.style.color = '#721c24';
+                setTimeout(() => {
+                    statusMessage.classList.add('hidden');
+                }, 5000);
+            };
+            reader.readAsText(file);
+        }
+
+        // Initial render with default data
+        updateDashboard(jsonData);
+
+        // Re-render charts on window resize for responsiveness
+        window.addEventListener('resize', () => updateDashboard(jsonData));
+    </script>
+</body>
+</html>
